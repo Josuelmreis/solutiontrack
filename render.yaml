@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: solutiontrack
+    runtime: python
+    plan: free
+    buildCommand: ""          # sem dependencias, nada a instalar
+    startCommand: python server.py 10000
+    envVars:
+      - key: PUBLIC_BASE_URL
+        sync: false           # defina com a URL publica do Render (https://...onrender.com)
+      - key: META_APP_ID
+        sync: false
+      - key: META_APP_SECRET
+        sync: false

@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SolutionTrack</title>
+<script src="https://cdn.tailwindcss.com/3.4.1"></script>
+<script src="https://unpkg.com/lucide@0.263.1/dist/umd/lucide.min.js"></script>
+<script>
+tailwind.config = {
+  theme: { extend: { colors: {
+    base: '#0B0F19', panel: '#111827', card: '#1F2937',
+    meta: '#1877F2', emerald: '#10B981'
+  }}}
+}
+</script>
+<style>
+  body { background:#0B0F19; color:#e5e7eb; }
+  .card { background:#1F2937; border:1px solid #1e293b; }
+  .nav-btn.active { background:#1877F2; color:#fff; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:#374151; border-radius:4px; }
+  .drag-over { outline:2px dashed #1877F2; }
+  .dragging { opacity:.4; }
+  table { border-collapse:collapse; }
+  .toast-in { animation: slidein .3s ease; }
+  @keyframes slidein { from{transform:translateX(100%);opacity:0} to{transform:translateX(0);opacity:1} }
+</style>
+</head>
+<body class="min-h-screen">
+
+<div class="flex min-h-screen">
+  <!-- SIDEBAR -->
+  <aside class="w-60 bg-panel border-r border-slate-800 flex flex-col fixed h-full">
+    <div class="p-5 flex items-center gap-2 border-b border-slate-800">
+      <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-meta to-emerald flex items-center justify-center">
+        <i data-lucide="activity" class="w-5 h-5 text-white"></i>
+      </div>
+      <div><div class="font-bold text-lg leading-none">SolutionTrack</div>
+        <div class="text-xs text-slate-500">Tracking & Meta Ads</div></div>
+    </div>
+    <nav class="flex-1 p-3 space-y-1 text-sm" id="nav"></nav>
+    <div class="p-3 border-t border-slate-800 text-xs text-slate-500">
+      <div id="conn-status" class="flex items-center gap-2"><span class="w-2 h-2 rounded-full bg-red-500"></span> Desconectado</div>
+    </div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="flex-1 ml-60">
+    <header class="h-16 border-b border-slate-800 bg-panel/60 backdrop-blur flex items-center justify-between px-6 sticky top-0 z-20">
+      <h1 id="page-title" class="text-xl font-semibold">Dashboard</h1>
+      <div class="flex items-center gap-3">
+        <select id="period" class="bg-card border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <option value="today">Hoje</option>
+          <option value="yesterday">Ontem</option>
+          <option value="last7" selected>Últimos 7 dias</option>
+          <option value="last_week">Semana passada</option>
+          <option value="this_month">Este mês</option>
+          <option value="last_month">Mês passado</option>
+          <option value="all">Todo o período</option>
+          <option value="custom">📅 Personalizado</option>
+        </select>
+        <div id="custom-range" class="hidden items-center gap-2">
+          <input type="date" id="date-start" class="bg-card border border-slate-700 rounded-lg px-2 py-2 text-sm">
+          <input type="date" id="date-end" class="bg-card border border-slate-700 rounded-lg px-2 py-2 text-sm">
+          <button onclick="applyCustom()" class="bg-meta px-3 py-2 rounded-lg text-sm">Aplicar</button>
+        </div>
+        <button onclick="refreshAll()" class="bg-card border border-slate-700 hover:bg-slate-700 px-3 py-2 rounded-lg text-sm flex items-center gap-2">
+          <i data-lucide="refresh-cw" class="w-4 h-4"></i> Atualizar
+        </button>
+      </div>
+    </header>
+
+    <div id="content" class="p-6"></div>
+  </main>
+</div>
+
+<div id="toasts" class="fixed bottom-6 right-6 space-y-2 z-50"></div>
+
+<script>
+// ======================= ESTADO & HELPERS =======================
+const API = '';
+let STATE = { period:'last7', start:null, end:null, dashboard:null, accounts:[], page:'dashboard' };
+let lastOrderCount = 0;
+
+const PAGES = [
+  {id:'dashboard', label:'Dashboard', icon:'layout-dashboard'},
+  {id:'campaigns', label:'Gerenciador de Anúncios', icon:'megaphone'},
+  {id:'financial', label:'Financeiro / Lucro', icon:'dollar-sign'},
+  {id:'funnel', label:'Funil de Conversão', icon:'filter'},
+  {id:'accounts', label:'Contas Meta', icon:'user-circle'},
+  {id:'pixels', label:'Pixels & CAPI', icon:'target'},
+  {id:'rules', label:'Regras & Automações', icon:'zap'},
+  {id:'webhooks', label:'Webhooks & Config', icon:'webhook'},
+];
+
+const money = v => 'R$ ' + (Number(v)||0).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
+const num = v => (Number(v)||0).toLocaleString('pt-BR');
+
+async function api(path, method='GET', body=null){
+  const opt = { method, headers:{'Content-Type':'application/json'} };
+  if(body) opt.body = JSON.stringify(body);
+  const r = await fetch(API+path, opt);
+  try { return await r.json(); } catch(e){ return {error:'resposta invalida'}; }
+}
+
+function toast(msg, type='info'){
+  const colors = {info:'bg-meta', success:'bg-emerald', error:'bg-red-500', sale:'bg-emerald'};
+  const el = document.createElement('div');
+  el.className = 'toast-in '+ (colors[type]||'bg-card') +' text-white px-4 py-3 rounded-xl shadow-lg flex items-center gap-2 max-w-sm';
+  el.innerHTML = (type==='sale'?'<i data-lucide="party-popper" class="w-5 h-5"></i>':'') + '<span>'+msg+'</span>';
+  document.getElementById('toasts').appendChild(el);
+  lucide.createIcons();
+  setTimeout(()=>el.remove(), 5000);
+}
+
+// ---- Ka-ching via Web Audio API ----
+function kaching(){
+  try {
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    const notes = [1318, 1760, 2093];
+    notes.forEach((f,i)=>{
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type='sine'; o.frequency.value=f;
+      o.connect(g); g.connect(ctx.destination);
+      const t = ctx.currentTime + i*0.09;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.3, t+0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+0.4);
+      o.start(t); o.stop(t+0.45);
+    });
+  } catch(e){}
+}
+
+// ======================= NAV =======================
+function renderNav(){
+  const nav = document.getElementById('nav');
+  nav.innerHTML = PAGES.map(p=>`
+    <button onclick="go('${p.id}')" class="nav-btn w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-slate-300 hover:bg-card ${STATE.page===p.id?'active':''}" data-page="${p.id}">
+      <i data-lucide="${p.icon}" class="w-4 h-4"></i> ${p.label}
+    </button>`).join('');
+  lucide.createIcons();
+}
+
+function go(page){
+  STATE.page = page;
+  document.getElementById('page-title').textContent = PAGES.find(p=>p.id===page).label;
+  renderNav();
+  render();
+}
+
+// ======================= PERIODO =======================
+document.getElementById('period').addEventListener('change', e=>{
+  STATE.period = e.target.value;
+  const cr = document.getElementById('custom-range');
+  if(e.target.value==='custom'){ cr.classList.remove('hidden'); cr.classList.add('flex'); }
+  else { cr.classList.add('hidden'); cr.classList.remove('flex'); refreshAll(); }
+});
+function applyCustom(){
+  STATE.start = document.getElementById('date-start').value;
+  STATE.end = document.getElementById('date-end').value;
+  refreshAll();
+}
+function periodQS(){
+  let q = '?period='+STATE.period;
+  if(STATE.period==='custom' && STATE.start && STATE.end) q += '&start='+STATE.start+'&end='+STATE.end;
+  return q;
+}
+
+// ======================= LOAD / REFRESH =======================
+async function refreshAll(){
+  STATE.dashboard = await api('/api/dashboard'+periodQS());
+  STATE.accounts = await api('/api/accounts');
+  updateConnStatus();
+  render();
+}
+
+function updateConnStatus(){
+  const el = document.getElementById('conn-status');
+  const connected = (STATE.accounts||[]).length>0;
+  el.innerHTML = `<span class="w-2 h-2 rounded-full ${connected?'bg-emerald':'bg-red-500'}"></span> ${connected? (STATE.accounts.length+' conta(s) Meta'):'Desconectado'}`;
+}
+
+// ======================= RENDER ROUTER =======================
+function render(){
+  const c = document.getElementById('content');
+  const r = {dashboard:renderDashboard, campaigns:renderCampaigns, financial:renderFinancial,
+    funnel:renderFunnel, accounts:renderAccounts, pixels:renderPixels, rules:renderRules, webhooks:renderWebhooks};
+  (r[STATE.page]||renderDashboard)(c);
+  lucide.createIcons();
+}
+
+// ======================= DASHBOARD (cards drag & drop) =======================
+const DEFAULT_CARDS = ['spend','gross','net','profit','roas','cpa','approved','pending','ticket','clicks','ctr','cpc'];
+function cardDef(k, d){
+  const map = {
+    spend:['Gasto em Anúncios', money(d.spend), 'trending-down', 'text-red-400'],
+    gross:['Faturamento Bruto', money(d.gross_revenue), 'banknote', 'text-emerald'],
+    net:['Faturamento Líquido', money(d.net_revenue), 'wallet', 'text-emerald'],
+    profit:['Lucro Real', money(d.profit), 'gem', (d.profit>=0?'text-emerald':'text-red-400')],
+    roas:['ROAS Real', (d.roas||0)+'x', 'gauge', 'text-meta'],
+    cpa:['CPA Real', money(d.cpa), 'user-check', 'text-orange-400'],
+    approved:['Vendas Aprovadas', num(d.approved_count), 'check-circle', 'text-emerald'],
+    pending:['Vendas Pendentes', num(d.pending_count)+' · '+money(d.pending_value), 'clock', 'text-yellow-400'],
+    ticket:['Ticket Médio', money(d.ticket), 'receipt', 'text-slate-200'],
+    clicks:['Cliques', num(d.clicks), 'mouse-pointer-click', 'text-meta'],
+    ctr:['CTR', (d.ctr||0)+'%', 'percent', 'text-slate-200'],
+    cpc:['CPC', money(d.cpc), 'coins', 'text-slate-200'],
+  };
+  return map[k];
+}
+
+async function renderDashboard(c){
+  const d = STATE.dashboard || {};
+  let order = DEFAULT_CARDS;
+  try { const saved = await api('/api/dashboard/layout'); if(saved && saved.order) order = saved.order; } catch(e){}
+  const cards = order.map(k=>{
+    const def = cardDef(k,d); if(!def) return '';
+    return `<div draggable="true" data-card="${k}" class="card rounded-2xl p-5 cursor-move">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm text-slate-400">${def[0]}</span>
+        <i data-lucide="${def[2]}" class="w-5 h-5 ${def[3]}"></i>
+      </div>
+      <div class="text-2xl font-bold ${def[3]}">${def[1]}</div>
+    </div>`;
+  }).join('');
+
+  c.innerHTML = `
+    <div class="mb-4 text-sm text-slate-500 flex items-center gap-2">
+      <i data-lucide="move" class="w-4 h-4"></i> Arraste os cards para reordenar · período ${d.period? d.period.start+' → '+d.period.end : ''}
+    </div>
+    <div id="cards-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">${cards}</div>
+
+    <div class="grid lg:grid-cols-2 gap-4 mt-6">
+      <div class="card rounded-2xl p-5">
+        <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="pie-chart" class="w-4 h-4"></i> Vendas por Origem</h3>
+        <div id="source-chart" class="space-y-3"></div>
+      </div>
+      <div class="card rounded-2xl p-5">
+        <h3 class="font-semibold mb-4 flex items-center gap-2"><i data-lucide="filter" class="w-4 h-4"></i> Funil (resumo)</h3>
+        <div id="mini-funnel"></div>
+      </div>
+    </div>`;
+
+  renderSourceChart(d.by_source||{});
+  renderMiniFunnel(d.funnel||{});
+  enableDrag();
+  lucide.createIcons();
+}
+
+const SOURCE_COLORS = {facebook:'#1877F2', instagram:'#E4405F', google:'#EA4335', tiktok:'#69C9D0', direct:'#64748B', youtube:'#FF0000'};
+function renderSourceChart(bySource){
+  const el = document.getElementById('source-chart');
+  const entries = Object.entries(bySource).sort((a,b)=>b[1]-a[1]);
+  const total = entries.reduce((s,e)=>s+e[1],0) || 1;
+  if(!entries.length){ el.innerHTML='<div class="text-slate-500 text-sm">Sem vendas no período.</div>'; return; }
+  el.innerHTML = entries.map(([k,v])=>{
+    const pct = (v/total*100).toFixed(1);
+    const col = SOURCE_COLORS[k] || '#8B5CF6';
+    return `<div>
+      <div class="flex justify-between text-sm mb-1"><span class="capitalize">${k}</span><span>${money(v)} · ${pct}%</span></div>
+      <div class="h-2 bg-slate-800 rounded-full overflow-hidden"><div class="h-full rounded-full" style="width:${pct}%;background:${col}"></div></div>
+    </div>`;
+  }).join('');
+}
+
+function renderMiniFunnel(f){
+  const el = document.getElementById('mini-funnel');
+  const steps = [['Cliques',f.clicks],['Vis. Página',f.page_views],['Checkout',f.initiate_checkout],['Vendas Inic.',f.sales_started],['Vendas Apr.',f.sales_approved]];
+  el.innerHTML = steps.map(([l,v])=>`<div class="flex justify-between py-2 border-b border-slate-800 text-sm"><span class="text-slate-400">${l}</span><span class="font-semibold">${num(v)}</span></div>`).join('');
+}
+
+function enableDrag(){
+  const grid = document.getElementById('cards-grid');
+  let dragged = null;
+  grid.querySelectorAll('[data-card]').forEach(el=>{
+    el.addEventListener('dragstart', ()=>{ dragged=el; el.classList.add('dragging'); });
+    el.addEventListener('dragend', ()=>{ el.classList.remove('dragging'); saveLayout(); });
+    el.addEventListener('dragover', e=>{ e.preventDefault(); el.classList.add('drag-over'); });
+    el.addEventListener('dragleave', ()=> el.classList.remove('drag-over'));
+    el.addEventListener('drop', e=>{
+      e.preventDefault(); el.classList.remove('drag-over');
+      if(dragged && dragged!==el){ grid.insertBefore(dragged, el); }
+    });
+  });
+}
+function saveLayout(){
+  const order = [...document.querySelectorAll('#cards-grid [data-card]')].map(el=>el.dataset.card);
+  api('/api/dashboard/layout','POST',{order});
+}
+
+// ======================= GERENCIADOR DE ANUNCIOS =======================
+let ADMAN = { tab:'campaign', data:{campaign:[],adset:[],ad:[]}, selected:new Set(), search:'' };
+
+async function renderCampaigns(c){
+  ADMAN.data.campaign = await api('/api/campaigns');
+  ADMAN.data.adset = await api('/api/adsets');
+  ADMAN.data.ad = await api('/api/ads');
+
+  c.innerHTML = `
+    <div class="flex items-center gap-2 mb-4">
+      <button onclick="syncPeriod()" class="bg-meta px-4 py-2 rounded-lg text-sm flex items-center gap-2"><i data-lucide="refresh-cw" class="w-4 h-4"></i> Sincronizar Período</button>
+      <input id="adman-search" oninput="ADMAN.search=this.value; drawAdmanTable()" placeholder="Buscar por nome..." class="bg-card border border-slate-700 rounded-lg px-3 py-2 text-sm flex-1 max-w-xs">
+    </div>
+    <div class="flex gap-2 mb-4 border-b border-slate-800">
+      ${tabBtn('campaign','CAMPANHAS')} ${tabBtn('adset','CONJUNTOS')} ${tabBtn('ad','ANÚNCIOS')}
+    </div>
+    <div id="bulk-bar" class="hidden mb-3 card rounded-xl p-3 flex items-center gap-2 flex-wrap">
+      <span id="bulk-count" class="text-sm text-slate-400 mr-2"></span>
+      <button onclick="bulk('ACTIVE')" class="bg-emerald/20 text-emerald px-3 py-1.5 rounded-lg text-sm">Ativar</button>
+      <button onclick="bulk('PAUSED')" class="bg-yellow-500/20 text-yellow-400 px-3 py-1.5 rounded-lg text-sm">Pausar</button>
+      <button onclick="toast('Duplicação enviada à fila','info')" class="bg-meta/20 text-meta px-3 py-1.5 rounded-lg text-sm">Duplicar</button>
+      <button onclick="toast('Use a Meta para alterar orçamento em massa','info')" class="bg-slate-700 px-3 py-1.5 rounded-lg text-sm">Orçamento</button>
+      <button onclick="bulk('DELETED')" class="bg-red-500/20 text-red-400 px-3 py-1.5 rounded-lg text-sm">Excluir</button>
+    </div>
+    <div class="card rounded-2xl overflow-hidden"><div class="overflow-x-auto"><table class="w-full text-sm" id="adman-table"></table></div></div>`;
+
+  drawAdmanTable();
+  lucide.createIcons();
+}
+function tabBtn(id,label){
+  const count = (ADMAN.data[id]||[]).length;
+  return `<button onclick="ADMAN.tab='${id}';ADMAN.selected.clear();renderCampaigns(document.getElementById('content'))"
+    class="px-4 py-2 text-sm font-medium border-b-2 ${ADMAN.tab===id?'border-meta text-white':'border-transparent text-slate-400'}">
+    ${label} <span class="ml-1 text-xs bg-slate-700 px-1.5 rounded-full">${count}</span></button>`;
+}
+
+function filteredRows(){
+  let rows = ADMAN.data[ADMAN.tab] || [];
+  // filtro hierarquico: se campanhas selecionadas, filtra adsets/ads
+  if(ADMAN.tab!=='campaign' && ADMAN.selectedCampaigns && ADMAN.selectedCampaigns.size){
+    rows = rows.filter(r=> ADMAN.selectedCampaigns.has(r.campaign_id));
+  }
+  if(ADMAN.search) rows = rows.filter(r=> (r.name||'').toLowerCase().includes(ADMAN.search.toLowerCase()));
+  return rows;
+}
+
+function drawAdmanTable(){
+  const t = document.getElementById('adman-table');
+  const rows = filteredRows();
+  const idCol = {campaign:'campaign_id',adset:'adset_id',ad:'ad_id'}[ADMAN.tab];
+  t.innerHTML = `
+    <thead class="bg-slate-900/50 text-slate-400 text-xs uppercase">
+      <tr>
+        <th class="p-3 text-left"><input type="checkbox" onchange="toggleAll(this.checked)"></th>
+        <th class="p-3 text-left">Nome</th><th class="p-3 text-left">Status</th>
+        ${ADMAN.tab!=='ad'?'<th class="p-3 text-right">Orçamento/dia</th>':''}
+        ${ADMAN.tab==='campaign'?'<th class="p-3 text-left">Objetivo</th>':''}
+      </tr></thead>
+    <tbody>${rows.map(r=>{
+      const id = r[idCol];
+      const active = r.status==='ACTIVE';
+      return `<tr class="border-t border-slate-800 hover:bg-slate-800/40">
+        <td class="p-3"><input type="checkbox" ${ADMAN.selected.has(id)?'checked':''} onchange="toggleRow('${id}',this.checked)"></td>
+        <td class="p-3 font-medium">${r.name||'-'}</td>
+        <td class="p-3"><span class="px-2 py-0.5 rounded-full text-xs ${active?'bg-emerald/20 text-emerald':'bg-slate-700 text-slate-300'}">${r.status||'-'}</span></td>
+        ${ADMAN.tab!=='ad'?'<td class="p-3 text-right">'+money(r.daily_budget)+'</td>':''}
+        ${ADMAN.tab==='campaign'?'<td class="p-3 text-slate-400">'+(r.objective||'-')+'</td>':''}
+      </tr>`;
+    }).join('') || `<tr><td colspan="5" class="p-8 text-center text-slate-500">Nenhum item. Clique em "Sincronizar Período".</td></tr>`}</tbody>`;
+}
+
+function toggleRow(id, on){
+  if(on) ADMAN.selected.add(id); else ADMAN.selected.delete(id);
+  if(ADMAN.tab==='campaign') ADMAN.selectedCampaigns = new Set(ADMAN.selected);
+  updateBulkBar();
+}
+function toggleAll(on){
+  filteredRows().forEach(r=>{ const id=r[{campaign:'campaign_id',adset:'adset_id',ad:'ad_id'}[ADMAN.tab]]; on?ADMAN.selected.add(id):ADMAN.selected.delete(id); });
+  if(ADMAN.tab==='campaign') ADMAN.selectedCampaigns = new Set(ADMAN.selected);
+  drawAdmanTable(); updateBulkBar();
+}
+function updateBulkBar(){
+  const bar = document.getElementById('bulk-bar');
+  if(!bar) return;
+  if(ADMAN.selected.size){ bar.classList.remove('hidden'); bar.classList.add('flex');
+    document.getElementById('bulk-count').textContent = ADMAN.selected.size+' selecionado(s)'; }
+  else { bar.classList.add('hidden'); bar.classList.remove('flex'); }
+}
+async function bulk(status){
+  const r = await api('/api/bulk/status','POST',{ids:[...ADMAN.selected], level:ADMAN.tab, status});
+  toast('Ação aplicada a '+r.updated+' item(ns)'+(r.errors&&r.errors.length?' ('+r.errors.length+' erros Meta)':''), r.errors&&r.errors.length?'error':'success');
+  ADMAN.selected.clear(); renderCampaigns(document.getElementById('content'));
+}
+async function syncPeriod(){
+  toast('Sincronizando com a Meta...','info');
+  const body = {period:STATE.period}; if(STATE.period==='custom'){body.start=STATE.start;body.end=STATE.end;}
+  const r = await api('/api/campaigns/sync','POST',body);
+  if(r.error) toast(r.error,'error'); else toast('Sincronizado: '+r.insights+' insights','success');
+  renderCampaigns(document.getElementById('content'));
+}
+
+// ======================= FINANCEIRO =======================
+async function renderFinancial(c){
+  const d = STATE.dashboard || {};
+  const fs = await api('/api/financial/settings');
+  c.innerHTML = `
+    <div class="grid lg:grid-cols-3 gap-4 mb-6">
+      ${finCard('Faturamento Bruto', money(d.gross_revenue),'banknote')}
+      ${finCard('Impostos (NF)', '- '+money(d.taxes),'landmark')}
+      ${finCard('Taxas Gateway', '- '+money(d.gateway_fees),'credit-card')}
+      ${finCard('Custo Produto', '- '+money(d.product_cost),'package')}
+      ${finCard('Gasto Anúncios', '- '+money(d.spend),'megaphone')}
+      ${finCard('Faturamento Líquido', money(d.net_revenue),'wallet')}
+    </div>
+    <div class="card rounded-2xl p-6 mb-6 bg-gradient-to-br from-emerald/10 to-transparent">
+      <div class="text-slate-400 text-sm mb-1">LUCRO REAL</div>
+      <div class="text-4xl font-bold ${(d.profit||0)>=0?'text-emerald':'text-red-400'}">${money(d.profit)}</div>
+    </div>
+    <div class="card rounded-2xl p-6 max-w-2xl">
+      <h3 class="font-semibold mb-4">Taxas Configuráveis</h3>
+      <div class="grid grid-cols-2 gap-4">
+        <label class="text-sm">Imposto NF (%)<input id="f-tax" type="number" step="0.1" value="${fs.tax_rate||0}" class="mt-1 w-full bg-base border border-slate-700 rounded-lg px-3 py-2"></label>
+        <label class="text-sm">Taxa Gateway (%)<input id="f-gw" type="number" step="0.1" value="${fs.gateway_percent||0}" class="mt-1 w-full bg-base border border-slate-700 rounded-lg px-3 py-2"></label>
+        <label class="text-sm">Taxa Fixa Gateway (R$)<input id="f-gwf" type="number" step="0.01" value="${fs.gateway_fixed||0}" class="mt-1 w-full bg-base border border-slate-700 rounded-lg px-3 py-2"></label>
+        <label class="text-sm">Custo Produto (%)<input id="f-prod" type="number" step="0.1" value="${fs.product_cost_percent||0}" class="mt-1 w-full bg-base border border-slate-700 rounded-lg px-3 py-2"></label>
+      </div>
+      <button onclick="saveFin()" class="mt-4 bg-meta px-4 py-2 rounded-lg text-sm">Salvar Taxas</button>
+    </div>`;
+  lucide.createIcons();
+}
+function finCard(label,val,icon){
+  return `<div class="card rounded-2xl p-5"><div class="flex items-center justify-between mb-2">
+    <span class="text-sm text-slate-400">${label}</span><i data-lucide="${icon}" class="w-4 h-4 text-slate-500"></i></div>
+    <div class="text-xl font-bold">${val}</div></div>`;
+}
+async function saveFin(){
+  await api('/api/financial/settings','POST',{
+    tax_rate:+document.getElementById('f-tax').value, gateway_percent:+document.getElementById('f-gw').value,
+    gateway_fixed:+document.getElementById('f-gwf').value, product_cost_percent:+document.getElementById('f-prod').value});
+  toast('Taxas salvas','success'); await refreshAll(); go('financial');
+}
+
+// ======================= FUNIL RIBBON =======================
+function renderFunnel(c){
+  const f = (STATE.dashboard||{}).funnel || {};
+  const rate = (a,b)=> b>0? ((a/b*100).toFixed(1)+'%') : '—';
+  const steps = [
+    ['CLIQUES', f.clicks, null, 'mouse-pointer-click'],
+    ['VIS. PÁGINA', f.page_views, 'Connect: '+rate(f.page_views,f.clicks), 'eye'],
+    ['INITIATE CHECKOUT', f.initiate_checkout, 'Pág→IC: '+rate(f.initiate_checkout,f.page_views), 'shopping-cart'],
+    ['VENDAS INIC.', f.sales_started, 'IC→Venda: '+rate(f.sales_started,f.initiate_checkout), 'file-text'],
+    ['VENDAS APR.', f.sales_approved, 'Conversão: '+rate(f.sales_approved,f.clicks), 'check-circle'],
+  ];
+  c.innerHTML = `<div class="card rounded-2xl p-6">
+    <h3 class="font-semibold mb-6">Funil de Conversão (estilo Meta Ads)</h3>
+    <div class="flex items-stretch gap-1 overflow-x-auto">
+      ${steps.map((s,i)=>`
+        <div class="flex-1 min-w-[150px] bg-gradient-to-br from-meta/20 to-base border border-slate-800 rounded-xl p-5 text-center">
+          <i data-lucide="${s[3]}" class="w-6 h-6 mx-auto mb-2 text-meta"></i>
+          <div class="text-2xl font-bold">${num(s[1])}</div>
+          <div class="text-xs text-slate-400 mt-1">${s[0]}</div>
+          ${s[2]?'<div class="text-xs text-emerald mt-2">'+s[2]+'</div>':''}
+        </div>
+        ${i<steps.length-1?'<div class="flex items-center text-slate-600"><i data-lucide="chevron-right" class="w-5 h-5"></i></div>':''}
+      `).join('')}
+    </div></div>`;
+  lucide.createIcons();
+}
+
+// ======================= CONTAS META =======================
+async function renderAccounts(c){
+  const cfg = await api('/api/config');
+  const accs = STATE.accounts;
+  c.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4 mb-6">
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold mb-3 flex items-center gap-2"><i data-lucide="log-in" class="w-4 h-4"></i> Login com 1 Clique (60 dias)</h3>
+        <p class="text-sm text-slate-400 mb-4">Autoriza <code>ads_read</code> + <code>public_profile</code>. Redirect: <code class="text-xs">${cfg.redirect_uri}</code></p>
+        <button onclick="metaLogin()" class="bg-meta px-5 py-2.5 rounded-lg flex items-center gap-2"><i data-lucide="facebook" class="w-4 h-4"></i> Conectar com Facebook</button>
+        <button onclick="metaDisconnect()" class="ml-2 bg-red-500/20 text-red-400 px-4 py-2.5 rounded-lg text-sm">Desconectar</button>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold mb-3 flex items-center gap-2"><i data-lucide="key-round" class="w-4 h-4"></i> Token Permanente (Nunca Expira)</h3>
+        <p class="text-sm text-slate-400 mb-3">Cole o token do Usuário do Sistema da BM.</p>
+        <textarea id="manual-token" rows="3" placeholder="EAAB..." class="w-full bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm font-mono"></textarea>
+        <button onclick="addManual()" class="mt-3 bg-emerald px-4 py-2 rounded-lg text-sm">Adicionar Manual</button>
+      </div>
+    </div>
+
+    <div class="card rounded-2xl p-6">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-semibold">Contas de Anúncio</h3>
+        <div class="flex gap-2">
+          <button onclick="selectAll(true)" class="text-sm bg-slate-700 px-3 py-1.5 rounded-lg">Marcar Todas</button>
+          <button onclick="selectAll(false)" class="text-sm bg-slate-700 px-3 py-1.5 rounded-lg">Desmarcar Todas</button>
+        </div>
+      </div>
+      <div class="space-y-2">${accs.map(a=>`
+        <div class="flex items-center justify-between bg-base rounded-xl p-3 border border-slate-800">
+          <div><div class="font-medium">${a.name||'Conta'}</div><div class="text-xs text-slate-500">act_${a.account_id} · ${a.currency||''} · ${a.fb_user_name||''}</div></div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input type="checkbox" ${a.is_selected?'checked':''} onchange="selectAcc('${a.account_id}',this.checked)" class="sr-only peer">
+            <div class="w-11 h-6 bg-slate-700 peer-checked:bg-emerald rounded-full peer after:content-[''] after:absolute after:top-0.5 after:left-0.5 after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:after:translate-x-5"></div>
+          </label>
+        </div>`).join('') || '<div class="text-slate-500 text-sm">Nenhuma conta conectada ainda.</div>'}</div>
+    </div>`;
+  lucide.createIcons();
+}
+async function metaLogin(){
+  const r = await api('/api/integrations/meta/login');
+  if(r.error){ toast(r.error,'error'); return; }
+  window.open(r.auth_url,'meta_oauth','width=600,height=720');
+}
+window.addEventListener('message', e=>{ if(e.data==='solutiontrack-meta-connected'){ toast('Meta conectada!','success'); setTimeout(refreshAll,800); }});
+async function metaDisconnect(){ await api('/api/integrations/meta/disconnect','DELETE'); toast('Desconectado','info'); refreshAll(); }
+async function addManual(){
+  const token = document.getElementById('manual-token').value.trim();
+  if(!token) return toast('Cole o token','error');
+  const r = await api('/api/accounts/manual','POST',{token});
+  if(r.error) toast(r.error,'error'); else { toast('Conta '+r.user+' ('+r.accounts+' contas)','success'); refreshAll(); }
+}
+async function selectAcc(id,on){ await api('/api/accounts/select','POST',{account_id:id,selected:on}); refreshAll(); }
+async function selectAll(on){ await api('/api/accounts/select_all','POST',{selected:on}); refreshAll(); }
+
+// ======================= PIXELS & CAPI =======================
+async function renderPixels(c){
+  const pixels = await api('/api/pixels');
+  const logs = await api('/api/capi/logs');
+  c.innerHTML = `
+    <div class="grid lg:grid-cols-2 gap-4">
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold mb-4">Novo Pixel (CAPI)</h3>
+        <input id="px-name" placeholder="Nome do pixel" class="w-full bg-base border border-slate-700 rounded-lg px-3 py-2 mb-2 text-sm">
+        <input id="px-id" placeholder="Pixel ID" class="w-full bg-base border border-slate-700 rounded-lg px-3 py-2 mb-2 text-sm">
+        <input id="px-token" placeholder="Access Token (CAPI)" class="w-full bg-base border border-slate-700 rounded-lg px-3 py-2 mb-2 text-sm font-mono">
+        <input id="px-test" placeholder="Test Event Code (opcional)" class="w-full bg-base border border-slate-700 rounded-lg px-3 py-2 mb-3 text-sm">
+        <button onclick="addPixel()" class="bg-meta px-4 py-2 rounded-lg text-sm">Adicionar Pixel</button>
+      </div>
+      <div class="card rounded-2xl p-6">
+        <h3 class="font-semibold mb-4">Testar Disparo CAPI</h3>
+        <input id="t-email" placeholder="email de teste" value="teste@solutiontrack.com" class="w-full bg-base border border-slate-700 rounded-lg px-3 py-2 mb-2 text-sm">
+        <input id="t-amount" type="number" placeholder="valor" value="97" class="w-full bg-base border border-slate-700 rounded-lg px-3 py-2 mb-3 text-sm">
+        <button onclick="testCapi()" class="bg-emerald px-4 py-2 rounded-lg text-sm flex items-center gap-2"><i data-lucide="send" class="w-4 h-4"></i> Disparar Purchase de Teste</button>
+      </div>
+    </div>
+    <div class="card rounded-2xl p-6 mt-4">
+      <h3 class="font-semibold mb-3">Pixels Cadastrados</h3>
+      <div class="space-y-2">${pixels.map(p=>`<div class="flex justify-between items-center bg-base rounded-lg p-3 border border-slate-800">
+        <div><span class="font-medium">${p.name}</span> <span class="text-xs text-slate-500">#${p.pixel_id}</span></div>
+        <button onclick="delPixel(${p.id})" class="text-red-400 text-sm">Remover</button></div>`).join('')||'<div class="text-slate-500 text-sm">Nenhum pixel.</div>'}</div>
+    </div>
+    <div class="card rounded-2xl p-6 mt-4">
+      <h3 class="font-semibold mb-3">Logs CAPI</h3>
+      <div class="space-y-1 text-xs font-mono max-h-64 overflow-auto">${logs.map(l=>`<div class="${l.status==='ok'?'text-emerald':'text-red-400'}">[${l.created_at}] ${l.event_name} → ${l.status}</div>`).join('')||'<div class="text-slate-500">Sem logs.</div>'}</div>
+    </div>`;
+  lucide.createIcons();
+}
+async function addPixel(){
+  await api('/api/pixels','POST',{name:v('px-name'),pixel_id:v('px-id'),access_token:v('px-token'),test_event_code:v('px-test')});
+  toast('Pixel adicionado','success'); renderPixels(document.getElementById('content'));
+}
+async function delPixel(id){ await api('/api/pixels?id='+id,'DELETE'); renderPixels(document.getElementById('content')); }
+async function testCapi(){
+  const r = await api('/api/capi/test','POST',{email:v('t-email'),amount:+v('t-amount')});
+  if(r.ok){ toast('Evento CAPI enviado!','success'); } else { toast('Erro CAPI: '+JSON.stringify(r.error||r.response),'error'); }
+  renderPixels(document.getElementById('content'));
+}
+const v = id => document.getElementById(id).value;
+
+// ======================= REGRAS =======================
+async function renderRules(c){
+  const rules = await api('/api/rules');
+  const logs = await api('/api/rules/logs');
+  c.innerHTML = `
+    <div class="card rounded-2xl p-6 mb-4">
+      <h3 class="font-semibold mb-4">Nova Regra / Automação</h3>
+      <div class="grid md:grid-cols-3 gap-3">
+        <input id="r-name" placeholder="Nome da regra" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <select id="r-type" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <option value="stop_loss">Stop Loss</option><option value="scale">Escala</option><option value="schedule">Agendamento</option>
+        </select>
+        <select id="r-metric" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <option value="spend">Gasto</option><option value="clicks">Cliques</option>
+        </select>
+        <select id="r-op" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <option value=">">maior que</option><option value="<">menor que</option><option value=">=">maior/igual</option>
+        </select>
+        <input id="r-val" type="number" placeholder="valor" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <select id="r-action" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <option value="pause">Pausar</option><option value="increase_budget">Aumentar orçamento %</option><option value="notify">Apenas notificar</option>
+        </select>
+      </div>
+      <button onclick="addRule()" class="mt-4 bg-meta px-4 py-2 rounded-lg text-sm">Criar Regra</button>
+    </div>
+    <div class="card rounded-2xl p-6 mb-4">
+      <h3 class="font-semibold mb-3">Regras Ativas</h3>
+      <div class="space-y-2">${rules.map(r=>`<div class="flex justify-between items-center bg-base rounded-lg p-3 border border-slate-800">
+        <div><span class="font-medium">${r.name}</span> <span class="text-xs text-slate-500">${r.rule_type} · ${r.condition_metric} ${r.condition_operator} ${r.condition_value} → ${r.action_type}</span></div>
+        <button onclick="delRule(${r.id})" class="text-red-400 text-sm">Remover</button></div>`).join('')||'<div class="text-slate-500 text-sm">Nenhuma regra.</div>'}</div>
+    </div>
+    <div class="card rounded-2xl p-6">
+      <h3 class="font-semibold mb-3">Histórico de Execuções</h3>
+      <div class="space-y-1 text-xs font-mono max-h-64 overflow-auto">${logs.map(l=>`<div class="text-slate-400">[${l.created_at}] ${l.message}</div>`).join('')||'<div class="text-slate-500">Sem execuções (roda a cada 5 min).</div>'}</div>
+    </div>`;
+  lucide.createIcons();
+}
+async function addRule(){
+  await api('/api/rules','POST',{name:v('r-name'),rule_type:v('r-type'),condition_metric:v('r-metric'),
+    condition_operator:v('r-op'),condition_value:+v('r-val'),action_type:v('r-action')});
+  toast('Regra criada','success'); renderRules(document.getElementById('content'));
+}
+async function delRule(id){ await api('/api/rules?id='+id,'DELETE'); renderRules(document.getElementById('content')); }
+
+// ======================= WEBHOOKS & CONFIG =======================
+async function renderWebhooks(c){
+  const cfg = await api('/api/config');
+  const base = cfg.base_url;
+  const platforms = ['kiwify','hotmart','greenn','cakto','wiapy'];
+  c.innerHTML = `
+    <div class="card rounded-2xl p-6 mb-4">
+      <h3 class="font-semibold mb-4">URLs de Webhook</h3>
+      <div class="space-y-2">${platforms.map(p=>`
+        <div class="flex items-center gap-2 bg-base rounded-lg p-3 border border-slate-800">
+          <span class="capitalize w-24 text-slate-300">${p}</span>
+          <code class="flex-1 text-xs text-emerald overflow-x-auto">${base}/api/webhook/${p}</code>
+          <button onclick="copy('${base}/api/webhook/${p}')" class="bg-slate-700 px-2 py-1 rounded text-xs">Copiar</button>
+        </div>`).join('')}</div>
+    </div>
+    <div class="card rounded-2xl p-6 mb-4">
+      <h3 class="font-semibold mb-3">Script de Pixel (instale na página de vendas)</h3>
+      <code class="block bg-base p-3 rounded-lg text-xs text-slate-300 overflow-x-auto">&lt;script src="${base}/solutiontrack.js"&gt;&lt;/script&gt;</code>
+      <button onclick="copy('<script src=\\'${base}/solutiontrack.js\\'><\\/script>')" class="mt-2 bg-slate-700 px-3 py-1.5 rounded-lg text-xs">Copiar tag</button>
+    </div>
+    <div class="card rounded-2xl p-6 mb-4">
+      <h3 class="font-semibold mb-3">Configuração do App Meta</h3>
+      <div class="grid md:grid-cols-2 gap-3">
+        <input id="cfg-id" placeholder="App ID" value="${cfg.app_id||''}" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+        <input id="cfg-secret" placeholder="App Secret" type="password" class="bg-base border border-slate-700 rounded-lg px-3 py-2 text-sm">
+      </div>
+      <p class="text-xs text-slate-500 mt-2">Redirect URI p/ colar no Meta: <code class="text-emerald">${cfg.redirect_uri}</code></p>
+      <button onclick="saveCfg()" class="mt-3 bg-meta px-4 py-2 rounded-lg text-sm">Salvar App Meta</button>
+    </div>
+    <div class="card rounded-2xl p-6">
+      <h3 class="font-semibold mb-3">Testar Venda ao Vivo (som)</h3>
+      <button onclick="testSale()" class="bg-emerald px-4 py-2 rounded-lg text-sm flex items-center gap-2"><i data-lucide="volume-2" class="w-4 h-4"></i> Simular venda aprovada</button>
+    </div>`;
+  lucide.createIcons();
+}
+function copy(t){ navigator.clipboard.writeText(t); toast('Copiado','success'); }
+async function saveCfg(){ await api('/api/config','POST',{app_id:v('cfg-id'),app_secret:v('cfg-secret')}); toast('App Meta salvo','success'); }
+async function testSale(){ await api('/api/orders/test','POST',{amount:97}); toast('Venda de teste criada','sale'); kaching(); refreshAll(); }
+
+// ======================= VENDAS AO VIVO (polling) =======================
+async function pollLiveSales(){
+  try {
+    const orders = await api('/api/orders');
+    if(lastOrderCount>0 && orders.length>lastOrderCount){
+      const diff = orders.length - lastOrderCount;
+      const newest = orders[0];
+      if(newest.status==='approved'){ kaching(); toast('Nova venda: '+money(newest.amount)+' ('+(newest.utm_source||'direct')+')','sale'); }
+    }
+    lastOrderCount = orders.length;
+  } catch(e){}
+}
+
+// ======================= INIT =======================
+(async function(){
+  renderNav();
+  await refreshAll();
+  const o = await api('/api/orders'); lastOrderCount = o.length;
+  setInterval(pollLiveSales, 15000);
+})();
+</script>
+</body>
+</html>
